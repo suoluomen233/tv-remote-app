@@ -55,8 +55,8 @@ jobs:
               applicationId "com.tv.remote"
               minSdk 26
               targetSdk 34
-              versionCode 1
-              versionName "1.0"
+              versionCode 2
+              versionName "2.0"
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -128,6 +128,8 @@ jobs:
           import android.net.Uri
           import android.os.Build
           import android.os.Bundle
+          import android.os.Handler
+          import android.os.Looper
           import android.provider.Settings
           import android.view.*
           import android.view.accessibility.AccessibilityEvent
@@ -143,13 +145,13 @@ jobs:
                       setPadding(48, 48, 48, 48)
                   }
                   val title = TextView(this).apply {
-                      text = "TV 随身遥控器"
+                      text = "TV 随身遥控器 v2.0"
                       textSize = 24f
                       setTextColor(Color.parseColor("#111827"))
                       paint.isFakeBoldText = true
                   }
                   val sub = TextView(this).apply {
-                      text = "专为安卓手机运行电视端 APP 打造的虚拟实体遥控"
+                      text = "支持【虚拟光标指针】与【焦点方向】双模式，通杀所有电视端 APP"
                       textSize = 14f
                       setTextColor(Color.parseColor("#6B7280"))
                       setPadding(0, 8, 0, 36)
@@ -178,11 +180,10 @@ jobs:
                       })
                   }
                   val tip = TextView(this).apply {
-                      text = "使用说明（支持直接分享给其他安卓用户）：\n" +
-                             "1. 小米澎湃OS / 安卓14+ 首次开启无障碍若显示灰色：\n" +
-                             "   点击上方橙色按钮 -> 右上角【⋮】->【解除受限设置】验证后即可开启。\n" +
-                             "2. 开启后屏幕出现半透明遥控盘，按住顶部【拖动】可随意移动，点【收起】折叠成边缘小球。\n" +
-                             "3. 底部滑块可实时调节遥控器透明度。"
+                      text = "v2.0 核心操作说明：\n" +
+                             "1. 默认开启【光标模式】：屏幕上会出现一个红色准星，点按或长按方向键可移动准星到频道/按钮上，按【OK】精准触发点击！\n" +
+                             "2. 顶部【模式切换】可随时在「光标」与「焦点」之间切换。\n" +
+                             "3. 覆盖安装新版后，建议在系统无障碍设置里将本服务重新开关一次以刷新界面。"
                       textSize = 13.5f
                       setTextColor(Color.parseColor("#374151"))
                       setLineSpacing(10f, 1.15f)
@@ -206,6 +207,12 @@ jobs:
               private var ball: TextView? = null
               private var lp: WindowManager.LayoutParams? = null
 
+              private var cursorView: View? = null
+              private var cursorLp: WindowManager.LayoutParams? = null
+              private var isCursorMode = true
+              private val handler = Handler(Looper.getMainLooper())
+              private var repeatRunnable: Runnable? = null
+
               override fun onServiceConnected() {
                   super.onServiceConnected()
                   if (Settings.canDrawOverlays(this)) initOverlay()
@@ -219,12 +226,35 @@ jobs:
                   val type = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                              else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
 
+                  val dm = resources.displayMetrics
+
+                  // 1. 初始化屏幕虚拟光标准星（不拦截触摸事件）
+                  cursorView = View(this).apply {
+                      background = GradientDrawable().apply {
+                          shape = GradientDrawable.OVAL
+                          setColor(Color.parseColor("#CCEF4444"))
+                          setStroke(5, Color.WHITE)
+                      }
+                  }
+                  cursorLp = WindowManager.LayoutParams(44, 44, type,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                      WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                      WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                      PixelFormat.TRANSLUCENT
+                  ).apply {
+                      gravity = Gravity.TOP or Gravity.START
+                      x = dm.widthPixels / 2 - 22
+                      y = dm.heightPixels / 2 - 22
+                  }
+                  wm?.addView(cursorView, cursorLp)
+
+                  // 2. 初始化遥控器主面板
                   lp = WindowManager.LayoutParams(-2, -2, type,
                       WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                       PixelFormat.TRANSLUCENT
                   ).apply {
                       gravity = Gravity.TOP or Gravity.START
-                      x = 100; y = 400
+                      x = 80; y = 380
                   }
 
                   rootBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -249,7 +279,7 @@ jobs:
                       orientation = LinearLayout.VERTICAL
                       setPadding(22, 18, 22, 22)
                       background = GradientDrawable().apply {
-                          setColor(Color.parseColor("#D9111827"))
+                          setColor(Color.parseColor("#E6111827"))
                           cornerRadius = 36f
                           setStroke(2, Color.parseColor("#4B5563"))
                       }
@@ -258,26 +288,43 @@ jobs:
                   val top = LinearLayout(this).apply {
                       orientation = LinearLayout.HORIZONTAL
                       gravity = Gravity.CENTER_VERTICAL
-                      setPadding(6, 0, 6, 14)
+                      setPadding(4, 0, 4, 14)
                   }
                   val dragTv = TextView(this).apply {
-                      text = "⋮⋮ 拖动"
+                      text = "⋮⋮拖动"
                       textSize = 12f
                       setTextColor(Color.parseColor("#9CA3AF"))
                       layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
                   }
+                  val modeTv = TextView(this).apply {
+                      text = " 光标模式 "
+                      textSize = 11.5f
+                      setTextColor(Color.parseColor("#FBBF24"))
+                      setPadding(12, 6, 12, 6)
+                      background = GradientDrawable().apply {
+                          setColor(Color.parseColor("#33F59E0B"))
+                          cornerRadius = 12f
+                      }
+                      setOnClickListener {
+                          isCursorMode = !isCursorMode
+                          text = if (isCursorMode) " 光标模式 " else " 焦点模式 "
+                          setTextColor(Color.parseColor(if (isCursorMode) "#FBBF24" else "#34D399"))
+                          cursorView?.visibility = if (isCursorMode && panel?.visibility == View.VISIBLE) View.VISIBLE else View.GONE
+                      }
+                  }
                   val hideTv = TextView(this).apply {
                       text = " 收起 "
-                      textSize = 12f
+                      textSize = 11.5f
                       setTextColor(Color.parseColor("#60A5FA"))
-                      setPadding(14, 6, 14, 6)
+                      setPadding(12, 6, 12, 6)
+                      layoutParams = LinearLayout.LayoutParams(-2, -2).apply { setMargins(10, 0, 0, 0) }
                       background = GradientDrawable().apply {
                           setColor(Color.parseColor("#333B82F6"))
                           cornerRadius = 12f
                       }
                       setOnClickListener { toggle(true) }
                   }
-                  top.addView(dragTv); top.addView(hideTv)
+                  top.addView(dragTv); top.addView(modeTv); top.addView(hideTv)
                   bindDrag(top)
 
                   fun key(t: String, bg: String = "#374151", w: Int = 112, h: Int = 96, fn: () -> Unit) = TextView(this).apply {
@@ -297,25 +344,63 @@ jobs:
                       }
                   }
 
+                  // 支持长按连发的方向键
+                  fun dirKey(t: String, dir: Int) = TextView(this).apply {
+                      text = t
+                      textSize = 16f
+                      setTextColor(Color.WHITE)
+                      gravity = Gravity.CENTER
+                      paint.isFakeBoldText = true
+                      background = GradientDrawable().apply {
+                          setColor(Color.parseColor("#374151"))
+                          cornerRadius = 20f
+                      }
+                      layoutParams = LinearLayout.LayoutParams(112, 96).apply { setMargins(7, 7, 7, 7) }
+                      setOnTouchListener { v, e ->
+                          when (e.action) {
+                              MotionEvent.ACTION_DOWN -> {
+                                  v.alpha = 0.7f
+                                  performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                  handleDirection(dir, 55)
+                                  repeatRunnable?.let { handler.removeCallbacks(it) }
+                                  repeatRunnable = object : Runnable {
+                                      override fun run() {
+                                          handleDirection(dir, 38)
+                                          handler.postDelayed(this, 65)
+                                      }
+                                  }
+                                  handler.postDelayed(repeatRunnable!!, 260)
+                                  true
+                              }
+                              MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                                  v.alpha = 1.0f
+                                  repeatRunnable?.let { handler.removeCallbacks(it) }
+                                  true
+                              }
+                              else -> false
+                          }
+                      }
+                  }
+
                   val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
                   val r1 = LinearLayout(this).apply { gravity = Gravity.CENTER }
                   r1.addView(key("音量-", "#1F2937", 105, 84) { audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI) })
-                  r1.addView(key("▲") { moveFocus(View.FOCUS_UP) })
+                  r1.addView(dirKey("▲", View.FOCUS_UP))
                   r1.addView(key("音量+", "#1F2937", 105, 84) { audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, AudioManager.FLAG_SHOW_UI) })
 
                   val r2 = LinearLayout(this).apply { gravity = Gravity.CENTER }
-                  r2.addView(key("◀") { moveFocus(View.FOCUS_LEFT) })
-                  r2.addView(key("OK", "#2563EB") { clickFocus() })
-                  r2.addView(key("▶") { moveFocus(View.FOCUS_RIGHT) })
+                  r2.addView(dirKey("◀", View.FOCUS_LEFT))
+                  r2.addView(key("OK", "#2563EB") { handleOk() })
+                  r2.addView(dirKey("▶", View.FOCUS_RIGHT))
 
                   val r3 = LinearLayout(this).apply { gravity = Gravity.CENTER }
                   r3.addView(key("返回", "#4B5563", 105, 86) { performGlobalAction(GLOBAL_ACTION_BACK) })
-                  r3.addView(key("▼") { moveFocus(View.FOCUS_DOWN) })
-                  r3.addView(key("菜单", "#4B5563", 105, 86) { openMenu() })
+                  r3.addView(dirKey("▼", View.FOCUS_DOWN))
+                  r3.addView(key("菜单", "#4B5563", 105, 86) { handleMenu() })
 
                   val seek = SeekBar(this).apply {
-                      max = 80; progress = 65
+                      max = 80; progress = 70
                       setPadding(12, 18, 12, 4)
                       setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                           override fun onProgressChanged(s: SeekBar?, p: Int, u: Boolean) { panel?.alpha = (p + 20) / 100f }
@@ -332,6 +417,7 @@ jobs:
               private fun toggle(collapse: Boolean) {
                   panel?.visibility = if (collapse) View.GONE else View.VISIBLE
                   ball?.visibility = if (collapse) View.VISIBLE else View.GONE
+                  cursorView?.visibility = if (!collapse && isCursorMode) View.VISIBLE else View.GONE
                   wm?.updateViewLayout(rootBox, lp)
               }
 
@@ -353,6 +439,57 @@ jobs:
                   }
               }
 
+              private fun handleDirection(dir: Int, step: Int) {
+                  if (isCursorMode) {
+                      val dm = resources.displayMetrics
+                      val curX = cursorLp?.x ?: (dm.widthPixels / 2)
+                      val curY = cursorLp?.y ?: (dm.heightPixels / 2)
+                      when (dir) {
+                          View.FOCUS_UP -> cursorLp?.y = (curY - step).coerceIn(0, dm.heightPixels - 44)
+                          View.FOCUS_DOWN -> cursorLp?.y = (curY + step).coerceIn(0, dm.heightPixels - 44)
+                          View.FOCUS_LEFT -> cursorLp?.x = (curX - step).coerceIn(0, dm.widthPixels - 44)
+                          View.FOCUS_RIGHT -> cursorLp?.x = (curX + step).coerceIn(0, dm.widthPixels - 44)
+                      }
+                      wm?.updateViewLayout(cursorView, cursorLp)
+                  } else {
+                      moveFocus(dir)
+                  }
+              }
+
+              private fun handleOk() {
+                  if (isCursorMode) {
+                      val cx = (cursorLp?.x ?: 0) + 22f
+                      val cy = (cursorLp?.y ?: 0) + 22f
+                      // 短暂隐藏准星避免极少数系统拦截重叠层点击，随即触发底层真实触控点击
+                      cursorView?.visibility = View.INVISIBLE
+                      tap(cx, cy)
+                      handler.postDelayed({
+                          if (isCursorMode && panel?.visibility == View.VISIBLE) {
+                              cursorView?.visibility = View.VISIBLE
+                          }
+                      }, 120)
+                  } else {
+                      clickFocus()
+                  }
+              }
+
+              private fun handleMenu() {
+                  val root = rootInActiveWindow
+                  if (root != null) {
+                      val nodes = root.findAccessibilityNodeInfosByText("菜单") +
+                                  root.findAccessibilityNodeInfosByText("设置") +
+                                  root.findAccessibilityNodeInfosByText("线路") +
+                                  root.findAccessibilityNodeInfosByText("换源")
+                      if (nodes.isNotEmpty()) {
+                          nodes[0].performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                          return
+                      }
+                  }
+                  // 电视端播放器通常点击屏幕右侧边缘或双击中心呼出设置菜单
+                  val dm = resources.displayMetrics
+                  tap(dm.widthPixels * 0.90f, dm.heightPixels * 0.50f)
+              }
+
               private fun moveFocus(dir: Int) {
                   val root = rootInActiveWindow ?: return
                   var cur = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: root.findFocus(AccessibilityNodeInfo.FOCUS_ACCESSIBILITY)
@@ -363,6 +500,7 @@ jobs:
                   val next = cur.focusSearch(dir) ?: findNearest(root, cur, dir)
                   next?.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
                   next?.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
+                  next?.performAction(AccessibilityNodeInfo.ACTION_SELECT)
               }
 
               private fun clickFocus() {
@@ -377,16 +515,6 @@ jobs:
                       val dm = resources.displayMetrics
                       tap(dm.widthPixels / 2f, dm.heightPixels / 2f)
                   }
-              }
-
-              private fun openMenu() {
-                  val root = rootInActiveWindow
-                  if (root != null) {
-                      val nodes = root.findAccessibilityNodeInfosByText("菜单") + root.findAccessibilityNodeInfosByText("设置")
-                      if (nodes.isNotEmpty()) { nodes[0].performAction(AccessibilityNodeInfo.ACTION_CLICK); return }
-                  }
-                  val dm = resources.displayMetrics
-                  tap(dm.widthPixels * 0.85f, dm.heightPixels * 0.5f)
               }
 
               private fun tap(x: Float, y: Float) {
@@ -433,7 +561,12 @@ jobs:
 
               override fun onAccessibilityEvent(e: AccessibilityEvent?) {}
               override fun onInterrupt() {}
-              override fun onDestroy() { super.onDestroy(); if (rootBox != null) { wm?.removeView(rootBox); rootBox = null } }
+              override fun onDestroy() {
+                  super.onDestroy()
+                  repeatRunnable?.let { handler.removeCallbacks(it) }
+                  if (rootBox != null) { wm?.removeView(rootBox); rootBox = null }
+                  if (cursorView != null) { wm?.removeView(cursorView); cursorView = null }
+              }
           }
           EOF
 
