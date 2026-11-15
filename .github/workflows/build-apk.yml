@@ -1,0 +1,446 @@
+name: Build TV Remote APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.5'
+
+      - name: Generate Project & Build APK
+        run: |
+          mkdir -p app/src/main/java/com/tv/remote app/src/main/res/xml app/src/main/res/values
+
+          cat << 'EOF' > settings.gradle
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
+          rootProject.name = "TVRemote"
+          include ':app'
+          EOF
+
+          cat << 'EOF' > build.gradle
+          plugins {
+            id 'com.android.application' version '8.2.2' apply false
+            id 'org.jetbrains.kotlin.android' version '1.9.22' apply false
+          }
+          EOF
+
+          cat << 'EOF' > gradle.properties
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          kotlin.code.style=official
+          EOF
+
+          cat << 'EOF' > app/build.gradle
+          plugins {
+            id 'com.android.application'
+            id 'org.jetbrains.kotlin.android'
+          }
+          android {
+            namespace 'com.tv.remote'
+            compileSdk 34
+            defaultConfig {
+              applicationId "com.tv.remote"
+              minSdk 26
+              targetSdk 34
+              versionCode 1
+              versionName "1.0"
+            }
+            compileOptions {
+              sourceCompatibility JavaVersion.VERSION_17
+              targetCompatibility JavaVersion.VERSION_17
+            }
+            kotlinOptions { jvmTarget = '17' }
+          }
+          dependencies {
+            implementation 'androidx.core:core-ktx:1.12.0'
+            implementation 'androidx.appcompat:appcompat:1.6.1'
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/res/values/strings.xml
+          <resources>
+            <string name="app_name">TV随身遥控</string>
+            <string name="acc_desc">用于在手机屏幕悬浮虚拟遥控器操作电视端应用</string>
+          </resources>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/xml/accessibility_config.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+            android:description="@string/acc_desc"
+            android:accessibilityEventTypes="typeAllMask"
+            android:accessibilityFeedbackType="feedbackGeneric"
+            android:notificationTimeout="50"
+            android:canRetrieveWindowContent="true"
+            android:canPerformGestures="true"
+            android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows|flagReportViewIds|flagRequestFilterKeyEvents" />
+          EOF
+
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+            <application android:allowBackup="true" android:label="@string/app_name" android:theme="@style/Theme.AppCompat.Light.DarkActionBar">
+              <activity android:name=".MainActivity" android:exported="true">
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN" />
+                  <category android:name="android.intent.category.LAUNCHER" />
+                </intent-filter>
+              </activity>
+              <service android:name=".RemoteAccessibilityService" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE" android:exported="true">
+                <intent-filter>
+                  <action android:name="android.accessibilityservice.AccessibilityService" />
+                </intent-filter>
+                <meta-data android:name="android.accessibilityservice" android:resource="@xml/accessibility_config" />
+              </service>
+            </application>
+          </manifest>
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/tv/remote/Main.kt
+          package com.tv.remote
+
+          import android.accessibilityservice.AccessibilityService
+          import android.accessibilityservice.GestureDescription
+          import android.annotation.SuppressLint
+          import android.app.Activity
+          import android.content.Context
+          import android.content.Intent
+          import android.graphics.Color
+          import android.graphics.Path
+          import android.graphics.PixelFormat
+          import android.graphics.Rect
+          import android.graphics.drawable.GradientDrawable
+          import android.media.AudioManager
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.view.*
+          import android.view.accessibility.AccessibilityEvent
+          import android.view.accessibility.AccessibilityNodeInfo
+          import android.widget.*
+
+          class MainActivity : Activity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  val scroll = ScrollView(this).apply { setBackgroundColor(Color.parseColor("#F3F4F6")) }
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(48, 48, 48, 48)
+                  }
+                  val title = TextView(this).apply {
+                      text = "TV 随身遥控器"
+                      textSize = 24f
+                      setTextColor(Color.parseColor("#111827"))
+                      paint.isFakeBoldText = true
+                  }
+                  val sub = TextView(this).apply {
+                      text = "专为安卓手机运行电视端 APP 打造的虚拟实体遥控"
+                      textSize = 14f
+                      setTextColor(Color.parseColor("#6B7280"))
+                      setPadding(0, 8, 0, 36)
+                  }
+                  fun btn(label: String, color: String, click: () -> Unit) = Button(this).apply {
+                      text = label
+                      textSize = 15f
+                      setTextColor(Color.WHITE)
+                      background = GradientDrawable().apply {
+                          setColor(Color.parseColor(color))
+                          cornerRadius = 24f
+                      }
+                      layoutParams = LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, 0, 0, 24) }
+                      setPadding(24, 30, 24, 30)
+                      setOnClickListener { click() }
+                  }
+                  val b1 = btn("第 1 步：开启悬浮窗权限", "#2563EB") {
+                      startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+                  }
+                  val b2 = btn("第 2 步：开启无障碍控制服务", "#059669") {
+                      startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                  }
+                  val b3 = btn("无障碍变灰点不动？点此解除受限", "#D97706") {
+                      startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                          data = Uri.parse("package:$packageName")
+                      })
+                  }
+                  val tip = TextView(this).apply {
+                      text = "使用说明（支持直接分享给其他安卓用户）：\n" +
+                             "1. 小米澎湃OS / 安卓14+ 首次开启无障碍若显示灰色：\n" +
+                             "   点击上方橙色按钮 -> 右上角【⋮】->【解除受限设置】验证后即可开启。\n" +
+                             "2. 开启后屏幕出现半透明遥控盘，按住顶部【拖动】可随意移动，点【收起】折叠成边缘小球。\n" +
+                             "3. 底部滑块可实时调节遥控器透明度。"
+                      textSize = 13.5f
+                      setTextColor(Color.parseColor("#374151"))
+                      setLineSpacing(10f, 1.15f)
+                      setPadding(36, 36, 36, 36)
+                      background = GradientDrawable().apply {
+                          setColor(Color.WHITE)
+                          cornerRadius = 24f
+                      }
+                  }
+                  root.addView(title); root.addView(sub)
+                  root.addView(b1); root.addView(b2); root.addView(b3); root.addView(tip)
+                  scroll.addView(root)
+                  setContentView(scroll)
+              }
+          }
+
+          class RemoteAccessibilityService : AccessibilityService() {
+              private var wm: WindowManager? = null
+              private var rootBox: LinearLayout? = null
+              private var panel: LinearLayout? = null
+              private var ball: TextView? = null
+              private var lp: WindowManager.LayoutParams? = null
+
+              override fun onServiceConnected() {
+                  super.onServiceConnected()
+                  if (Settings.canDrawOverlays(this)) initOverlay()
+                  else Toast.makeText(this, "请先在软件首页开启悬浮窗权限", Toast.LENGTH_LONG).show()
+              }
+
+              @SuppressLint("ClickableViewAccessibility")
+              private fun initOverlay() {
+                  if (rootBox != null) return
+                  wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                  val type = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                             else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
+
+                  lp = WindowManager.LayoutParams(-2, -2, type,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                      PixelFormat.TRANSLUCENT
+                  ).apply {
+                      gravity = Gravity.TOP or Gravity.START
+                      x = 100; y = 400
+                  }
+
+                  rootBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+                  ball = TextView(this).apply {
+                      text = "遥控"
+                      textSize = 13f
+                      setTextColor(Color.WHITE)
+                      gravity = Gravity.CENTER
+                      visibility = View.GONE
+                      background = GradientDrawable().apply {
+                          shape = GradientDrawable.OVAL
+                          setColor(Color.parseColor("#CC1E293B"))
+                          setStroke(3, Color.parseColor("#60A5FA"))
+                      }
+                      layoutParams = LinearLayout.LayoutParams(110, 110)
+                      setOnClickListener { toggle(false) }
+                  }
+                  bindDrag(ball!!)
+
+                  panel = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(22, 18, 22, 22)
+                      background = GradientDrawable().apply {
+                          setColor(Color.parseColor("#D9111827"))
+                          cornerRadius = 36f
+                          setStroke(2, Color.parseColor("#4B5563"))
+                      }
+                  }
+
+                  val top = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      setPadding(6, 0, 6, 14)
+                  }
+                  val dragTv = TextView(this).apply {
+                      text = "⋮⋮ 拖动"
+                      textSize = 12f
+                      setTextColor(Color.parseColor("#9CA3AF"))
+                      layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+                  }
+                  val hideTv = TextView(this).apply {
+                      text = " 收起 "
+                      textSize = 12f
+                      setTextColor(Color.parseColor("#60A5FA"))
+                      setPadding(14, 6, 14, 6)
+                      background = GradientDrawable().apply {
+                          setColor(Color.parseColor("#333B82F6"))
+                          cornerRadius = 12f
+                      }
+                      setOnClickListener { toggle(true) }
+                  }
+                  top.addView(dragTv); top.addView(hideTv)
+                  bindDrag(top)
+
+                  fun key(t: String, bg: String = "#374151", w: Int = 112, h: Int = 96, fn: () -> Unit) = TextView(this).apply {
+                      text = t
+                      textSize = 14f
+                      setTextColor(Color.WHITE)
+                      gravity = Gravity.CENTER
+                      paint.isFakeBoldText = true
+                      background = GradientDrawable().apply {
+                          setColor(Color.parseColor(bg))
+                          cornerRadius = 20f
+                      }
+                      layoutParams = LinearLayout.LayoutParams(w, h).apply { setMargins(7, 7, 7, 7) }
+                      setOnClickListener {
+                          performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                          fn()
+                      }
+                  }
+
+                  val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+                  val r1 = LinearLayout(this).apply { gravity = Gravity.CENTER }
+                  r1.addView(key("音量-", "#1F2937", 105, 84) { audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI) })
+                  r1.addView(key("▲") { moveFocus(View.FOCUS_UP) })
+                  r1.addView(key("音量+", "#1F2937", 105, 84) { audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, AudioManager.FLAG_SHOW_UI) })
+
+                  val r2 = LinearLayout(this).apply { gravity = Gravity.CENTER }
+                  r2.addView(key("◀") { moveFocus(View.FOCUS_LEFT) })
+                  r2.addView(key("OK", "#2563EB") { clickFocus() })
+                  r2.addView(key("▶") { moveFocus(View.FOCUS_RIGHT) })
+
+                  val r3 = LinearLayout(this).apply { gravity = Gravity.CENTER }
+                  r3.addView(key("返回", "#4B5563", 105, 86) { performGlobalAction(GLOBAL_ACTION_BACK) })
+                  r3.addView(key("▼") { moveFocus(View.FOCUS_DOWN) })
+                  r3.addView(key("菜单", "#4B5563", 105, 86) { openMenu() })
+
+                  val seek = SeekBar(this).apply {
+                      max = 80; progress = 65
+                      setPadding(12, 18, 12, 4)
+                      setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                          override fun onProgressChanged(s: SeekBar?, p: Int, u: Boolean) { panel?.alpha = (p + 20) / 100f }
+                          override fun onStartTrackingTouch(s: SeekBar?) {}
+                          override fun onStopTrackingTouch(s: SeekBar?) {}
+                      })
+                  }
+
+                  panel!!.addView(top); panel!!.addView(r1); panel!!.addView(r2); panel!!.addView(r3); panel!!.addView(seek)
+                  rootBox!!.addView(ball); rootBox!!.addView(panel)
+                  wm?.addView(rootBox, lp)
+              }
+
+              private fun toggle(collapse: Boolean) {
+                  panel?.visibility = if (collapse) View.GONE else View.VISIBLE
+                  ball?.visibility = if (collapse) View.VISIBLE else View.GONE
+                  wm?.updateViewLayout(rootBox, lp)
+              }
+
+              @SuppressLint("ClickableViewAccessibility")
+              private fun bindDrag(v: View) {
+                  var ix = 0; var iy = 0; var tx = 0f; var ty = 0f; var moved = false
+                  v.setOnTouchListener { view, e ->
+                      when (e.action) {
+                          MotionEvent.ACTION_DOWN -> { ix = lp?.x ?: 0; iy = lp?.y ?: 0; tx = e.rawX; ty = e.rawY; moved = false; true }
+                          MotionEvent.ACTION_MOVE -> {
+                              val dx = (e.rawX - tx).toInt(); val dy = (e.rawY - ty).toInt()
+                              if (Math.abs(dx) > 10 || Math.abs(dy) > 10) moved = true
+                              lp?.x = ix + dx; lp?.y = iy + dy
+                              wm?.updateViewLayout(rootBox, lp); true
+                          }
+                          MotionEvent.ACTION_UP -> { if (!moved) view.performClick(); true }
+                          else -> false
+                      }
+                  }
+              }
+
+              private fun moveFocus(dir: Int) {
+                  val root = rootInActiveWindow ?: return
+                  var cur = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: root.findFocus(AccessibilityNodeInfo.FOCUS_ACCESSIBILITY)
+                  if (cur == null) {
+                      findFirst(root)?.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+                      return
+                  }
+                  val next = cur.focusSearch(dir) ?: findNearest(root, cur, dir)
+                  next?.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+                  next?.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
+              }
+
+              private fun clickFocus() {
+                  val root = rootInActiveWindow ?: return
+                  val cur = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: root.findFocus(AccessibilityNodeInfo.FOCUS_ACCESSIBILITY)
+                  if (cur != null) {
+                      if (!cur.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                          val r = Rect(); cur.getBoundsInScreen(r)
+                          tap(r.centerX().toFloat(), r.centerY().toFloat())
+                      }
+                  } else {
+                      val dm = resources.displayMetrics
+                      tap(dm.widthPixels / 2f, dm.heightPixels / 2f)
+                  }
+              }
+
+              private fun openMenu() {
+                  val root = rootInActiveWindow
+                  if (root != null) {
+                      val nodes = root.findAccessibilityNodeInfosByText("菜单") + root.findAccessibilityNodeInfosByText("设置")
+                      if (nodes.isNotEmpty()) { nodes[0].performAction(AccessibilityNodeInfo.ACTION_CLICK); return }
+                  }
+                  val dm = resources.displayMetrics
+                  tap(dm.widthPixels * 0.85f, dm.heightPixels * 0.5f)
+              }
+
+              private fun tap(x: Float, y: Float) {
+                  if (x < 0 || y < 0) return
+                  val p = Path().apply { moveTo(x, y) }
+                  dispatchGesture(GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(p, 0, 50)).build(), null, null)
+              }
+
+              private fun findFirst(n: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+                  if (n == null) return null
+                  if (n.isFocusable && n.isVisibleToUser) return n
+                  for (i in 0 until n.childCount) { findFirst(n.getChild(i))?.let { return it } }
+                  return null
+              }
+
+              private fun findNearest(root: AccessibilityNodeInfo, cur: AccessibilityNodeInfo, dir: Int): AccessibilityNodeInfo? {
+                  val cr = Rect(); cur.getBoundsInScreen(cr)
+                  val list = mutableListOf<AccessibilityNodeInfo>()
+                  collect(root, list)
+                  var best: AccessibilityNodeInfo? = null; var minD = Double.MAX_VALUE
+                  for (item in list) {
+                      if (item == cur) continue
+                      val r = Rect(); item.getBoundsInScreen(r)
+                      val ok = when (dir) {
+                          View.FOCUS_UP -> r.centerY() < cr.centerY() - 10
+                          View.FOCUS_DOWN -> r.centerY() > cr.centerY() + 10
+                          View.FOCUS_LEFT -> r.centerX() < cr.centerX() - 10
+                          View.FOCUS_RIGHT -> r.centerX() > cr.centerX() + 10
+                          else -> false
+                      }
+                      if (ok) {
+                          val d = Math.hypot((r.centerX() - cr.centerX()).toDouble(), (r.centerY() - cr.centerY()).toDouble())
+                          if (d < minD) { minD = d; best = item }
+                      }
+                  }
+                  return best
+              }
+
+              private fun collect(n: AccessibilityNodeInfo?, list: MutableList<AccessibilityNodeInfo>) {
+                  if (n == null || !n.isVisibleToUser) return
+                  if (n.isFocusable || n.isClickable) list.add(n)
+                  for (i in 0 until n.childCount) collect(n.getChild(i), list)
+              }
+
+              override fun onAccessibilityEvent(e: AccessibilityEvent?) {}
+              override fun onInterrupt() {}
+              override fun onDestroy() { super.onDestroy(); if (rootBox != null) { wm?.removeView(rootBox); rootBox = null } }
+          }
+          EOF
+
+          gradle assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: TV-Remote-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
